@@ -1,0 +1,29 @@
+name: AX_Poster_Trace
+description: Professional multi-page poster splitter, line tracing enhancer, and automated printing studio.
+stack: React, Vite, Tailwind CSS, Lucide React, PDF.js
+
+routes:
+  - name: studio_main
+    path: /
+    label: استوديو تفريغ وتقسيم البوسترات
+    description: واجهة العمل الرئيسية مع معاينة حية تفاعلية وقائمة تحكم متكاملة وشريط انتظار للصور
+  - name: print_modal
+    path: /#print
+    label: معاينة واختيار شرائح الطباعة
+    description: نافذة اختيار صفحات الـ A4 المقسمة وضبط إعدادات الطباعة المباشرة وحفظ الـ PDF
+
+frontend:
+  src:
+    components:
+      poster_trace:
+        AX_PosterTraceStudio.jsx: الحاوية الرئيسية للاستوديو وإدارة الحالة التفاعلية
+        AX_PosterHeader.jsx: ترويسة التطبيق مع التبديل السريع والإجراءات
+        AX_PosterCanvasPreview.jsx: لوحة المعاينة التفاعلية والتكبير والتحريك وخطوط الشف
+        AX_PosterControlPanel.jsx: لوحة التحكم الجانبية لتقسيم الصور، المقاسات، وإزالة الخلفية
+        AX_PosterQueueBar.jsx: شريط الصور السفلي للإدارة والاختيار المتعدد للطباعة
+        AX_PosterPrintModal.jsx: نافذة معاينة وطباعة الصفحات المقسمة بجودة عالية
+        AX_PosterUploadZone.jsx: منطقة سحب وإفلات الصور وملفات الـ PDF
+    utils:
+      ax_image_filters.js: معالجة الصور الرقمية، تنظيف الخلفية، وتعزيز خطوط التحديد
+      ax_poster_splitter.js: خوارزمية تقسيم البوسترات إلى شبكة صفحات A4 وحساب هوامش اللصق
+      ax_pdf_loader.js: قارئ ومحول ملفات الـ PDF عالية الدقة
