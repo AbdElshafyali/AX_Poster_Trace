@@ -6,18 +6,31 @@ import AX_PosterQueueBar from './AX_PosterQueueBar';
 import AX_PosterControlPanel from './AX_PosterControlPanel';
 import AX_PosterCanvasPreview from './AX_PosterCanvasPreview';
 import AX_PosterPrintModal from './AX_PosterPrintModal';
+import AX_WebIconsExporterModal from './AX_WebIconsExporterModal';
 import { extractAllPdfPages } from '../../utils/ax_pdf_loader';
 import { generatePosterTiles, getPosterTargetDimensions } from '../../utils/ax_poster_splitter';
-import { applyGrayscale, applySobelTraceOutline, applyColorAdjust, renderPannedCanvas } from '../../utils/ax_image_filters';
+import { renderCompositeCanvas } from '../../utils/ax_image_filters';
+import {
+  cloneCanvas,
+  autoRemoveBackground,
+  magicWandRemoveAtPoint,
+  applyBrushStroke
+} from '../../utils/ax_bg_remover';
 
 const DEFAULT_ITEM_SETTINGS = {
-  colorMode: 'trace',
+  colorMode: 'color',
   faintInk: 0.06,
   threshold: 30,
-  contrast: 1.2,
+  contrast: 1.1,
   invert: false,
-  cleanBackground: true,
+  cleanBackground: false,
   bgThreshold: 215,
+  bgFillType: 'white',
+  bgCustomColor: '#e0f2fe',
+  bgGradientColor1: '#e0f2fe',
+  bgGradientColor2: '#fef9c3',
+  bgRemoveTolerance: 38,
+  bgContiguous: true,
   panX: 0,
   panY: 0,
   scale: 1,
@@ -36,15 +49,142 @@ export default function AX_PosterTraceStudio() {
   const [checkedItemIds, setCheckedItemIds] = useState(new Set());
   const [isLoading, setIsLoading] = useState(false);
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
+  const [isWebIconsModalOpen, setIsWebIconsModalOpen] = useState(false);
   const [generatedTiles, setGeneratedTiles] = useState([]);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [mobileViewMode, setMobileViewMode] = useState('split');
+  const [activeTool, setActiveTool] = useState('move');
+  const [brushSize, setBrushSize] = useState(28);
+  const [canvasVersion, setCanvasVersion] = useState(0);
 
   useEffect(() => {
     handleSampleClick();
   }, []);
 
   const activeItem = items[activeIndex] || null;
+
+  const pushUndoSnapshot = (item) => {
+    if (!item || !item.canvas) return;
+    const ctx = item.canvas.getContext('2d');
+    const snap = ctx.getImageData(0, 0, item.canvas.width, item.canvas.height);
+    if (!item.undoStack) item.undoStack = [];
+    if (item.undoStack.length >= 12) item.undoStack.shift();
+    item.undoStack.push(snap);
+  };
+
+  const handleAutoRemoveBg = () => {
+    if (!activeItem || !activeItem.canvas) return;
+    pushUndoSnapshot(activeItem);
+    autoRemoveBackground(
+      activeItem.canvas,
+      activeItem.originalCanvas || activeItem.canvas,
+      activeItem.settings.bgRemoveTolerance ?? 38,
+      activeItem.settings.bgContiguous ?? true
+    );
+    if ((activeItem.settings.bgFillType || 'white') === 'white') {
+      handleUpdateSettings({ ...activeItem.settings, bgFillType: 'transparent' });
+    }
+    setCanvasVersion((v) => v + 1);
+  };
+
+  const handleWandClick = (srcX, srcY) => {
+    if (!activeItem || !activeItem.canvas) return;
+    pushUndoSnapshot(activeItem);
+    magicWandRemoveAtPoint(
+      activeItem.canvas,
+      srcX,
+      srcY,
+      activeItem.settings.bgRemoveTolerance ?? 38,
+      activeItem.settings.bgContiguous ?? true
+    );
+    if ((activeItem.settings.bgFillType || 'white') === 'white') {
+      handleUpdateSettings({ ...activeItem.settings, bgFillType: 'transparent' });
+    }
+    setCanvasVersion((v) => v + 1);
+  };
+
+  const handleBrushStrokeStart = () => {
+    if (!activeItem) return;
+    pushUndoSnapshot(activeItem);
+  };
+
+  const handleBrushStrokeMove = (x0, y0, x1, y1, radius, mode) => {
+    if (!activeItem || !activeItem.canvas) return;
+    applyBrushStroke(
+      activeItem.canvas,
+      activeItem.originalCanvas || activeItem.canvas,
+      x0,
+      y0,
+      x1,
+      y1,
+      radius,
+      mode
+    );
+    setCanvasVersion((v) => v + 1);
+  };
+
+  const handleUndoBgEdit = () => {
+    if (!activeItem || !activeItem.undoStack || activeItem.undoStack.length === 0) return;
+    const prevData = activeItem.undoStack.pop();
+    const ctx = activeItem.canvas.getContext('2d');
+    ctx.putImageData(prevData, 0, 0);
+    setCanvasVersion((v) => v + 1);
+  };
+
+  const handleResetOriginalImage = () => {
+    if (!activeItem || !activeItem.originalCanvas) return;
+    pushUndoSnapshot(activeItem);
+    const ctx = activeItem.canvas.getContext('2d');
+    ctx.clearRect(0, 0, activeItem.canvas.width, activeItem.canvas.height);
+    ctx.drawImage(activeItem.originalCanvas, 0, 0);
+    setCanvasVersion((v) => v + 1);
+  };
+
+  const handleUploadBgImage = () => {
+    if (!activeItem) return;
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        const bgCanvas = document.createElement('canvas');
+        bgCanvas.width = img.width;
+        bgCanvas.height = img.height;
+        bgCanvas.getContext('2d').drawImage(img, 0, 0);
+        URL.revokeObjectURL(url);
+        setItems((prev) => {
+          const updated = [...prev];
+          updated[activeIndex] = {
+            ...updated[activeIndex],
+            bgImageCanvas: bgCanvas,
+            settings: { ...updated[activeIndex].settings, bgFillType: 'image' }
+          };
+          return updated;
+        });
+        setCanvasVersion((v) => v + 1);
+      };
+      img.src = url;
+    };
+    input.click();
+  };
+
+  const handleClearBgImage = () => {
+    if (!activeItem) return;
+    setItems((prev) => {
+      const updated = [...prev];
+      updated[activeIndex] = {
+        ...updated[activeIndex],
+        bgImageCanvas: null,
+        settings: { ...updated[activeIndex].settings, bgFillType: 'white' }
+      };
+      return updated;
+    });
+    setCanvasVersion((v) => v + 1);
+  };
 
   const handleFilesSelected = async (files) => {
     setIsLoading(true);
@@ -59,6 +199,8 @@ export default function AX_PosterTraceStudio() {
               id: `${Date.now()}_${Math.random()}`,
               name: page.fileName,
               canvas: page.canvas,
+              originalCanvas: cloneCanvas(page.canvas),
+              undoStack: [],
               dataUrl: page.dataUrl,
               width: page.width,
               height: page.height,
@@ -82,7 +224,9 @@ export default function AX_PosterTraceStudio() {
               id: `${Date.now()}_${Math.random()}`,
               name: file.name,
               canvas,
-              dataUrl: canvas.toDataURL('image/jpeg', 0.92),
+              originalCanvas: cloneCanvas(canvas),
+              undoStack: [],
+              dataUrl: canvas.toDataURL('image/png'),
               width: img.width,
               height: img.height,
               settings: { ...DEFAULT_ITEM_SETTINGS }
@@ -115,10 +259,12 @@ export default function AX_PosterTraceStudio() {
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, 1600, 1200);
 
-    ctx.strokeStyle = '#1e293b';
-    ctx.lineWidth = 14;
+    ctx.fillStyle = '#fef08a';
     ctx.beginPath();
     ctx.arc(800, 520, 260, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#1e293b';
+    ctx.lineWidth = 14;
     ctx.stroke();
 
     ctx.beginPath();
@@ -135,21 +281,19 @@ export default function AX_PosterTraceStudio() {
     ctx.font = 'bold 56px sans-serif';
     ctx.fillStyle = '#0a2540';
     ctx.textAlign = 'center';
-    ctx.fillText('نموذج تجريبي للشف والتحديد والتقسيم', 800, 950);
-
-    ctx.font = '32px sans-serif';
-    ctx.fillStyle = '#64748b';
-    ctx.fillText('AXONID Multi-Page Poster & Trace Studio', 800, 1030);
+    ctx.fillText('نموذج تجريبي لإزالة الخلفية والشف والتقسيم', 800, 950);
 
     const sampleId = `sample_${Date.now()}`;
     setItems([{
       id: sampleId,
-      name: 'رسمة_نموذجية_للشف.png',
+      name: 'رسمة_نموذجية.png',
       canvas,
+      originalCanvas: cloneCanvas(canvas),
+      undoStack: [],
       dataUrl: canvas.toDataURL('image/png'),
       width: 1600,
       height: 1200,
-      settings: { ...DEFAULT_ITEM_SETTINGS, colorMode: 'trace', faintInk: 0.06 }
+      settings: { ...DEFAULT_ITEM_SETTINGS }
     }]);
     setCheckedItemIds(new Set([sampleId]));
     setActiveIndex(0);
@@ -199,21 +343,10 @@ export default function AX_PosterTraceStudio() {
   const toggleItemCheck = (id) => {
     setCheckedItemIds((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
-  };
-
-  const selectAllItems = () => {
-    setCheckedItemIds(new Set(items.map((it) => it.id)));
-  };
-
-  const deselectAllItems = () => {
-    setCheckedItemIds(new Set());
   };
 
   const checkedItems = items.filter((it) => checkedItemIds.has(it.id));
@@ -230,48 +363,14 @@ export default function AX_PosterTraceStudio() {
       s.orientation,
       item.canvas
     );
-    const panned = renderPannedCanvas(
+    return renderCompositeCanvas(
       item.canvas,
       targetW,
       targetH,
-      s.panX || 0,
-      s.panY || 0,
-      s.scale || 1,
-      s.fitMode || 'fit'
+      s,
+      item.bgImageCanvas || null,
+      true
     );
-
-    const canvas = document.createElement('canvas');
-    canvas.width = panned.width;
-    canvas.height = panned.height;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(panned, 0, 0);
-
-    if (s.colorMode === 'trace') {
-      applySobelTraceOutline(
-        ctx,
-        canvas.width,
-        canvas.height,
-        s.faintInk,
-        s.threshold,
-        s.invert,
-        s.cleanBackground ?? true,
-        s.bgThreshold ?? 215
-      );
-    } else if (s.colorMode === 'bw') {
-      applyGrayscale(
-        ctx,
-        canvas.width,
-        canvas.height,
-        s.contrast,
-        0,
-        s.faintInk,
-        s.cleanBackground ?? true,
-        s.bgThreshold ?? 215
-      );
-    } else if (s.colorMode === 'color') {
-      applyColorAdjust(ctx, canvas.width, canvas.height, s.contrast, 0);
-    }
-    return canvas;
   };
 
   const handlePrepareBatchPrint = (targetItems = null) => {
@@ -314,7 +413,7 @@ export default function AX_PosterTraceStudio() {
       setGeneratedTiles(combinedTiles);
       setIsLoading(false);
       setIsPrintModalOpen(true);
-    }, 50);
+    }, 40);
   };
 
   const totalPosterPages = activeItem
@@ -334,6 +433,7 @@ export default function AX_PosterTraceStudio() {
         }}
         onPrintAll={() => handlePrepareBatchPrint()}
         onExportPdf={() => handlePrepareBatchPrint()}
+        onOpenWebIconsExport={() => setIsWebIconsModalOpen(true)}
       />
 
       {items.length === 0 ? (
@@ -347,47 +447,28 @@ export default function AX_PosterTraceStudio() {
       ) : (
         <div className="flex-1 flex flex-col h-[calc(100vh-68px)] overflow-hidden">
           <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative">
-
             <div className="lg:hidden flex items-center justify-between px-3 py-1.5 bg-white border-b border-[#e2e8f0] shrink-0 z-20">
               <div className="flex items-center gap-1.5">
-                <span className="text-xs font-extrabold text-[#0a2540]">طريقة العرض:</span>
+                <span className="text-xs font-extrabold text-[#0a2540]">العرض:</span>
                 <div className="flex items-center bg-[#f1f5f9] p-0.5 rounded-[20px] border border-[#cbd5e1]">
-                  <button
-                    type="button"
-                    onClick={() => setMobileViewMode('split')}
-                    className={`px-2.5 py-1 text-[10px] font-extrabold rounded-[16px] transition-all ${
-                      mobileViewMode === 'split'
-                        ? 'bg-[#0a2540] text-white shadow-xs'
-                        : 'text-[#64748b] hover:text-[#0a2540]'
-                    }`}
-                  >
-                    شاشة منقسمة
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setMobileViewMode('canvas')}
-                    className={`px-2.5 py-1 text-[10px] font-extrabold rounded-[16px] transition-all ${
-                      mobileViewMode === 'canvas'
-                        ? 'bg-[#0a2540] text-white shadow-xs'
-                        : 'text-[#64748b] hover:text-[#0a2540]'
-                    }`}
-                  >
-                    الصورة كاملة
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setMobileViewMode('settings')}
-                    className={`px-2.5 py-1 text-[10px] font-extrabold rounded-[16px] transition-all ${
-                      mobileViewMode === 'settings'
-                        ? 'bg-[#0a2540] text-white shadow-xs'
-                        : 'text-[#64748b] hover:text-[#0a2540]'
-                    }`}
-                  >
-                    الإعدادات فقط
-                  </button>
+                  {[
+                    { id: 'split', label: 'منقسمة' },
+                    { id: 'canvas', label: 'الصورة' },
+                    { id: 'settings', label: 'الإعدادات' }
+                  ].map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => setMobileViewMode(m.id)}
+                      className={`px-2.5 py-1 text-[10px] font-extrabold rounded-[16px] ${
+                        mobileViewMode === m.id ? 'bg-[#0a2540] text-white' : 'text-[#64748b]'
+                      }`}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
                 </div>
               </div>
-
               <span className="text-[11px] font-bold text-[#0369a1] bg-[#e0f2fe] px-2 py-0.5 rounded-[12px]">
                 {activeItem?.settings?.cols}×{activeItem?.settings?.rows} A4
               </span>
@@ -397,12 +478,22 @@ export default function AX_PosterTraceStudio() {
               className={`
                 flex-1 min-w-0 flex flex-col overflow-hidden bg-[#f1f5f9] relative order-1 lg:order-2
                 ${mobileViewMode === 'settings' ? 'hidden lg:flex' : 'flex'}
-                ${mobileViewMode === 'split' ? 'h-[40vh] shrink-0 border-b border-[#e2e8f0] lg:border-b-0 lg:h-full' : 'h-full'}
+                ${mobileViewMode === 'split' ? 'h-[42vh] shrink-0 border-b border-[#e2e8f0] lg:border-b-0 lg:h-full' : 'h-full'}
               `}
             >
               <AX_PosterCanvasPreview
                 item={activeItem}
                 settings={activeItem.settings}
+                canvasVersion={canvasVersion}
+                activeTool={activeTool}
+                onSelectTool={setActiveTool}
+                brushSize={brushSize}
+                onBrushStrokeStart={handleBrushStrokeStart}
+                onBrushStrokeMove={handleBrushStrokeMove}
+                onWandClick={handleWandClick}
+                onAutoRemoveBg={handleAutoRemoveBg}
+                onUndoBgEdit={handleUndoBgEdit}
+                canUndo={Boolean(activeItem?.undoStack?.length)}
                 onPreparePrint={() => handlePrepareBatchPrint([activeItem])}
                 onPanChange={(newPanX, newPanY) => {
                   handleUpdateSettings({ ...activeItem.settings, panX: newPanX, panY: newPanY });
@@ -419,8 +510,8 @@ export default function AX_PosterTraceStudio() {
             <div
               className={`
                 transition-all duration-300 ease-in-out z-20 flex flex-col bg-white order-2 lg:order-1
-                lg:h-full lg:shrink-0 lg:border-l lg:border-[#e2e8f0] lg:shadow-sm
-                ${isSidebarCollapsed ? 'lg:w-[60px]' : 'lg:w-[380px] xl:w-[420px]'}
+                lg:h-full lg:shrink-0 lg:border-l lg:border-[#e2e8f0] lg:shadow-xs
+                ${isSidebarCollapsed ? 'lg:w-[60px]' : 'lg:w-[390px] xl:w-[430px]'}
                 ${mobileViewMode === 'canvas' ? 'hidden lg:flex' : 'flex'}
                 ${mobileViewMode === 'split' ? 'flex-1 overflow-y-auto lg:h-full' : ''}
                 ${mobileViewMode === 'settings' ? 'flex-1 h-full' : ''}
@@ -431,27 +522,22 @@ export default function AX_PosterTraceStudio() {
                   <button
                     type="button"
                     onClick={() => setIsSidebarCollapsed(false)}
-                    className="p-2.5 rounded-full bg-[#0a2540] text-white hover:bg-[#123961] shadow-md transition-all hover:scale-105"
-                    title="فتح قائمة الإعدادات الجانبية"
+                    className="p-2.5 rounded-full bg-[#0a2540] text-white hover:bg-[#123961] shadow-md"
                   >
                     <PanelRightOpen size={18} />
                   </button>
-                  <span className="text-[11px] font-bold text-[#64748b] [writing-mode:vertical-rl] rotate-180 tracking-wider">
-                    لوحة الإعدادات الجانبية
-                  </span>
                 </div>
               ) : (
                 <div className="h-full flex flex-col relative overflow-hidden">
                   <div className="hidden lg:flex items-center justify-between px-4 py-2 bg-[#f8fafc] border-b border-[#e2e8f0] text-xs font-extrabold text-[#0a2540]">
                     <span className="flex items-center gap-1.5">
                       <Sliders size={14} />
-                      <span>لوحة التحكم والإعدادات الجانبية</span>
+                      <span>لوحة التحكم وإزالة الخلفية</span>
                     </span>
                     <button
                       type="button"
                       onClick={() => setIsSidebarCollapsed(true)}
-                      className="p-1 hover:bg-[#e2e8f0] rounded-lg text-[#64748b] hover:text-[#0a2540] transition-colors"
-                      title="تصغير القائمة الجانبية لتوسيع شاشة المعاينة"
+                      className="p-1 hover:bg-[#e2e8f0] rounded-lg text-[#64748b]"
                     >
                       <PanelRightClose size={16} />
                     </button>
@@ -464,12 +550,23 @@ export default function AX_PosterTraceStudio() {
                       onApplyToAll={handleApplyToAll}
                       onPreparePrint={() => handlePrepareBatchPrint([activeItem])}
                       hasMultipleItems={items.length > 1}
+                      activeTool={activeTool}
+                      onSelectTool={setActiveTool}
+                      brushSize={brushSize}
+                      onBrushSizeChange={setBrushSize}
+                      onAutoRemoveBg={handleAutoRemoveBg}
+                      onUndoBgEdit={handleUndoBgEdit}
+                      onResetOriginalImage={handleResetOriginalImage}
+                      canUndo={Boolean(activeItem?.undoStack?.length)}
+                      onUploadBgImage={handleUploadBgImage}
+                      onClearBgImage={handleClearBgImage}
+                      hasCustomBgImage={Boolean(activeItem?.bgImageCanvas)}
+                      onOpenWebIconsExport={() => setIsWebIconsModalOpen(true)}
                     />
                   </div>
                 </div>
               )}
             </div>
-
           </div>
 
           <div className="shrink-0 z-30">
@@ -482,8 +579,8 @@ export default function AX_PosterTraceStudio() {
               activeIndex={activeIndex}
               checkedItemIds={checkedItemIds}
               onToggleCheck={toggleItemCheck}
-              onSelectAll={selectAllItems}
-              onDeselectAll={deselectAllItems}
+              onSelectAll={() => setCheckedItemIds(new Set(items.map((it) => it.id)))}
+              onDeselectAll={() => setCheckedItemIds(new Set())}
               onSelectIndex={setActiveIndex}
               onDeleteItem={handleDeleteItem}
               onApplyToAll={handleApplyToAll}
@@ -502,6 +599,14 @@ export default function AX_PosterTraceStudio() {
           </div>
         </div>
       )}
+
+      <AX_WebIconsExporterModal
+        isOpen={isWebIconsModalOpen}
+        onClose={() => setIsWebIconsModalOpen(false)}
+        sourceCanvas={activeItem?.canvas || null}
+        defaultBgColor={activeItem?.settings?.bgCustomColor || '#ffffff'}
+        itemName={activeItem?.name || 'AX_Logo'}
+      />
 
       <AX_PosterPrintModal
         isOpen={isPrintModalOpen}

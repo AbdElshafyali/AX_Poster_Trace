@@ -1,14 +1,33 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ZoomIn, ZoomOut, Maximize2, Move, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, RotateCcw, Loader2, Printer } from 'lucide-react';
-import { applyGrayscale, applySobelTraceOutline, applyColorAdjust, renderPannedCanvas } from '../../utils/ax_image_filters';
+import { ZoomIn, ZoomOut, Maximize2, Move, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, RotateCcw, Printer, Eraser, Brush, Wand2, Undo2, Sparkles } from 'lucide-react';
+import { renderCompositeCanvas, getDrawBounds } from '../../utils/ax_image_filters';
 import { getPosterTargetDimensions } from '../../utils/ax_poster_splitter';
 
-export default function AX_PosterCanvasPreview({ item, settings, onPreparePrint, onPanChange, onScaleChange, onFitModeChange }) {
+export default function AX_PosterCanvasPreview({
+  item,
+  settings,
+  canvasVersion,
+  activeTool = 'move',
+  onSelectTool,
+  brushSize = 28,
+  onBrushStrokeStart,
+  onBrushStrokeMove,
+  onWandClick,
+  onAutoRemoveBg,
+  onUndoBgEdit,
+  canUndo,
+  onPreparePrint,
+  onPanChange,
+  onScaleChange,
+  onFitModeChange
+}) {
   const canvasRef = useRef(null);
   const [zoom, setZoom] = useState(1);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [cursorPos, setCursorPos] = useState(null);
   const dragStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
+  const lastBrushPointRef = useRef(null);
 
   useEffect(() => {
     if (!item || !item.canvas) return;
@@ -17,10 +36,10 @@ export default function AX_PosterCanvasPreview({ item, settings, onPreparePrint,
     const timer = setTimeout(() => {
       renderProcessedImage();
       setIsProcessing(false);
-    }, 50);
+    }, 25);
 
     return () => clearTimeout(timer);
-  }, [item, settings]);
+  }, [item, settings, canvasVersion]);
 
   const renderProcessedImage = () => {
     const canvas = canvasRef.current;
@@ -34,63 +53,122 @@ export default function AX_PosterCanvasPreview({ item, settings, onPreparePrint,
       sourceCanvas
     );
 
-    const panned = renderPannedCanvas(
+    const composite = renderCompositeCanvas(
       sourceCanvas,
       targetW,
       targetH,
+      settings,
+      item.bgImageCanvas || null,
+      false
+    );
+
+    canvas.width = composite.width;
+    canvas.height = composite.height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(composite, 0, 0);
+  };
+
+  const mapClientToSourceCoords = (clientX, clientY) => {
+    const canvas = canvasRef.current;
+    if (!canvas || !item || !item.canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return null;
+
+    const canvasX = ((clientX - rect.left) / rect.width) * canvas.width;
+    const canvasY = ((clientY - rect.top) / rect.height) * canvas.height;
+
+    const { finalX, finalY, drawW, drawH } = getDrawBounds(
+      item.canvas.width,
+      item.canvas.height,
+      canvas.width,
+      canvas.height,
       settings.panX || 0,
       settings.panY || 0,
       settings.scale || 1,
       settings.fitMode || 'fit'
     );
 
-    canvas.width = panned.width;
-    canvas.height = panned.height;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(panned, 0, 0);
+    const srcX = ((canvasX - finalX) / drawW) * item.canvas.width;
+    const srcY = ((canvasY - finalY) / drawH) * item.canvas.height;
+    const scaleFactor = item.canvas.width / rect.width;
+    const srcRadius = Math.max(2, (brushSize / 2) * scaleFactor);
 
-    if (settings.colorMode === 'trace') {
-      applySobelTraceOutline(
-        ctx,
-        canvas.width,
-        canvas.height,
-        settings.faintInk,
-        settings.threshold,
-        settings.invert,
-        settings.cleanBackground ?? true,
-        settings.bgThreshold ?? 215
-      );
-    } else if (settings.colorMode === 'bw') {
-      applyGrayscale(
-        ctx,
-        canvas.width,
-        canvas.height,
-        settings.contrast,
-        0,
-        settings.faintInk,
-        settings.cleanBackground ?? true,
-        settings.bgThreshold ?? 215
-      );
-    } else if (settings.colorMode === 'color') {
-      applyColorAdjust(ctx, canvas.width, canvas.height, settings.contrast, 0);
-    }
+    return { srcX, srcY, srcRadius };
   };
 
-  const handleMouseDown = (e) => {
-    if (e.button !== 0) return;
+  const handlePointerDown = (e) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+
+    if (activeTool === 'wand') {
+      const pt = mapClientToSourceCoords(clientX, clientY);
+      if (pt && onWandClick) {
+        onWandClick(Math.round(pt.srcX), Math.round(pt.srcY));
+      }
+      return;
+    }
+
+    if (activeTool === 'erase' || activeTool === 'restore') {
+      const pt = mapClientToSourceCoords(clientX, clientY);
+      if (pt) {
+        setIsDragging(true);
+        if (onBrushStrokeStart) onBrushStrokeStart();
+        lastBrushPointRef.current = pt;
+        if (onBrushStrokeMove) {
+          onBrushStrokeMove(pt.srcX, pt.srcY, pt.srcX, pt.srcY, pt.srcRadius, activeTool);
+        }
+      }
+      return;
+    }
+
     setIsDragging(true);
     dragStartRef.current = {
-      x: e.clientX,
-      y: e.clientY,
+      x: clientX,
+      y: clientY,
       panX: settings.panX || 0,
       panY: settings.panY || 0
     };
   };
 
-  const handleMouseMove = (e) => {
-    if (!isDragging || !onPanChange) return;
-    const dx = e.clientX - dragStartRef.current.x;
-    const dy = e.clientY - dragStartRef.current.y;
+  const handlePointerMove = (e) => {
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+
+    if (activeTool === 'erase' || activeTool === 'restore') {
+      const canvas = canvasRef.current;
+      if (canvas) {
+        const rect = canvas.getBoundingClientRect();
+        setCursorPos({
+          x: clientX - rect.left,
+          y: clientY - rect.top
+        });
+      }
+    } else if (cursorPos) {
+      setCursorPos(null);
+    }
+
+    if (!isDragging) return;
+
+    if (activeTool === 'erase' || activeTool === 'restore') {
+      const pt = mapClientToSourceCoords(clientX, clientY);
+      if (pt && lastBrushPointRef.current && onBrushStrokeMove) {
+        onBrushStrokeMove(
+          lastBrushPointRef.current.srcX,
+          lastBrushPointRef.current.srcY,
+          pt.srcX,
+          pt.srcY,
+          pt.srcRadius,
+          activeTool
+        );
+        lastBrushPointRef.current = pt;
+      }
+      return;
+    }
+
+    if (!onPanChange) return;
+    const dx = clientX - dragStartRef.current.x;
+    const dy = clientY - dragStartRef.current.y;
     const stepX = (dx / 300) * 50;
     const stepY = (dy / 250) * 50;
     const newPanX = Math.round(dragStartRef.current.panX + stepX);
@@ -98,8 +176,9 @@ export default function AX_PosterCanvasPreview({ item, settings, onPreparePrint,
     onPanChange(newPanX, newPanY);
   };
 
-  const handleMouseUp = () => {
+  const handlePointerUp = () => {
     setIsDragging(false);
+    lastBrushPointRef.current = null;
   };
 
   const shiftPan = (dx, dy) => {
@@ -121,14 +200,11 @@ export default function AX_PosterCanvasPreview({ item, settings, onPreparePrint,
     }
   };
 
-  if (!item) {
-    return null;
-  }
+  if (!item) return null;
 
   const cols = settings.cols || 1;
   const rows = settings.rows || 1;
   const totalPages = cols * rows;
-
   const a4WidthMm = settings.orientation === 'landscape' ? 297 : 210;
   const a4HeightMm = settings.orientation === 'landscape' ? 210 : 297;
   const totalWidthCm = ((cols * a4WidthMm) / 10).toFixed(1);
@@ -136,88 +212,143 @@ export default function AX_PosterCanvasPreview({ item, settings, onPreparePrint,
 
   return (
     <div
-      onMouseUp={handleMouseUp}
+      onMouseUp={handlePointerUp}
+      onTouchEnd={handlePointerUp}
       className="bg-white flex flex-col h-full overflow-hidden"
     >
-      <div className="flex items-center justify-between px-5 py-3 border-b border-[#e2e8f0] bg-[#f8fafc] flex-wrap gap-2">
-        <div className="flex items-center gap-2.5 flex-wrap">
-          <span className="text-xs font-extrabold text-[#0a2540]">
-            المعاينة الحية لتقسيم البوستر:
-          </span>
-          <span className="bg-[#eff6ff] text-[#1d4ed8] border border-[#bfdbfe] text-xs font-extrabold px-3 py-1 rounded-[20px]">
-            {cols} أعمدة × {rows} صفوف ({totalPages} صفحات A4)
-          </span>
-          <span className="text-[11px] font-mono text-[#64748b] bg-white border border-[#e2e8f0] px-2 py-0.5 rounded-[12px]">
-            المقاس الكلي: {totalWidthCm} سم × {totalHeightCm} سم
-          </span>
-          <span className="text-[11px] font-bold text-[#047857] bg-[#ecfdf5] border border-[#a7f3d0] px-2.5 py-0.5 rounded-[12px]">
-            حجم الرسمة: {Math.round((settings.scale || 1) * 100)}%
-          </span>
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-[#e2e8f0] bg-[#f8fafc] flex-wrap gap-2">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <button
+            type="button"
+            onClick={onAutoRemoveBg}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-[30px] text-xs font-extrabold bg-[#0a2540] hover:bg-[#123961] text-white shadow-xs transition-all hover:-translate-y-0.5"
+          >
+            <Sparkles size={13} />
+            <span>إزالة الخلفية تلقائياً</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onSelectTool && onSelectTool(activeTool === 'erase' ? 'move' : 'erase')}
+            className={`flex items-center gap-1 px-3 py-1.5 rounded-[30px] text-xs font-extrabold border transition-all ${
+              activeTool === 'erase'
+                ? 'bg-[#dc2626] text-white border-[#dc2626] shadow-xs'
+                : 'bg-white text-[#dc2626] border-[#fecaca] hover:bg-[#fef2f2]'
+            }`}
+          >
+            <Eraser size={13} />
+            <span>ممحاة مسح</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onSelectTool && onSelectTool(activeTool === 'restore' ? 'move' : 'restore')}
+            className={`flex items-center gap-1 px-3 py-1.5 rounded-[30px] text-xs font-extrabold border transition-all ${
+              activeTool === 'restore'
+                ? 'bg-[#047857] text-white border-[#047857] shadow-xs'
+                : 'bg-white text-[#047857] border-[#a7f3d0] hover:bg-[#ecfdf5]'
+            }`}
+          >
+            <Brush size={13} />
+            <span>استرجاع الممسوح</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onSelectTool && onSelectTool(activeTool === 'wand' ? 'move' : 'wand')}
+            className={`flex items-center gap-1 px-3 py-1.5 rounded-[30px] text-xs font-extrabold border transition-all ${
+              activeTool === 'wand'
+                ? 'bg-[#7c3aed] text-white border-[#7c3aed] shadow-xs'
+                : 'bg-white text-[#7c3aed] border-[#ddd6fe] hover:bg-[#f5f3ff]'
+            }`}
+          >
+            <Wand2 size={13} />
+            <span>عصا سحرية</span>
+          </button>
+
+          {canUndo && (
+            <button
+              type="button"
+              onClick={onUndoBgEdit}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-[30px] text-xs font-extrabold bg-white hover:bg-[#f1f5f9] text-[#0a2540] border border-[#cbd5e1]"
+              title="تراجع عن آخر مسحة"
+            >
+              <Undo2 size={13} />
+              <span>تراجع</span>
+            </button>
+          )}
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2">
+          <span className="hidden sm:inline-block bg-[#eff6ff] text-[#1d4ed8] border border-[#bfdbfe] text-[11px] font-extrabold px-2.5 py-1 rounded-[20px]">
+            {cols}×{rows} ({totalWidthCm}×{totalHeightCm} سم)
+          </span>
+
           {onPreparePrint && (
             <button
               type="button"
               onClick={onPreparePrint}
-              className="flex items-center gap-1.5 text-xs font-extrabold text-white bg-[#0a2540] hover:bg-[#123961] px-4 py-1.5 rounded-[30px] shadow hover:-translate-y-0.5 transition-all"
+              className="flex items-center gap-1.5 text-xs font-extrabold text-white bg-[#047857] hover:bg-[#065f46] px-3.5 py-1.5 rounded-[30px] shadow-xs hover:-translate-y-0.5 transition-all"
             >
               <Printer size={14} />
-              <span>معاينة واختيار الصفحات للطباعة</span>
+              <span>طباعة</span>
             </button>
           )}
 
-          <div className="flex items-center gap-1 bg-white border border-[#cbd5e1] p-1 rounded-[30px] shadow-sm">
-            <button
-              type="button"
-              onClick={() => setZoom(z => Math.max(0.4, z - 0.15))}
-              className="p-1.5 hover:bg-[#f1f5f9] rounded-full text-[#475569] transition-colors"
-            >
-              <ZoomOut size={14} />
-            </button>
-            <span className="text-[11px] font-mono font-bold text-[#0a2540] px-1 min-w-[42px] text-center">
-              {Math.round(zoom * 100)}%
-            </span>
-            <button
-              type="button"
-              onClick={() => setZoom(z => Math.min(2.5, z + 0.15))}
-              className="p-1.5 hover:bg-[#f1f5f9] rounded-full text-[#475569] transition-colors"
-            >
-              <ZoomIn size={14} />
-            </button>
-            <button
-              type="button"
-              onClick={() => setZoom(1)}
-              className="p-1.5 hover:bg-[#f1f5f9] rounded-full text-[#475569] transition-colors"
-            >
-              <Maximize2 size={14} />
-            </button>
+          <div className="flex items-center gap-1 bg-white border border-[#cbd5e1] p-0.5 rounded-[30px]">
+            <button type="button" onClick={() => setZoom(z => Math.max(0.4, z - 0.15))} className="p-1 hover:bg-[#f1f5f9] rounded-full text-[#475569]"><ZoomOut size={13} /></button>
+            <span className="text-[10px] font-mono font-bold text-[#0a2540] px-1">{Math.round(zoom * 100)}%</span>
+            <button type="button" onClick={() => setZoom(z => Math.min(2.5, z + 0.15))} className="p-1 hover:bg-[#f1f5f9] rounded-full text-[#475569]"><ZoomIn size={13} /></button>
           </div>
         </div>
       </div>
 
       <div
-        onMouseMove={handleMouseMove}
+        onMouseMove={handlePointerMove}
+        onTouchMove={handlePointerMove}
+        onMouseLeave={() => setCursorPos(null)}
         className="flex-1 overflow-auto p-3 sm:p-6 bg-[#f1f5f9] flex flex-col items-center justify-center min-h-0 relative"
       >
         {isProcessing && (
-          <div className="absolute inset-0 bg-white/70 backdrop-blur-xs flex items-center justify-center z-20">
-            <div className="flex items-center gap-2 text-xs font-bold text-[#0a2540] bg-white px-4 py-2 rounded-[30px] shadow-md border border-[#e2e8f0]">
-              <Loader2 size={16} className="animate-spin text-[#0a2540]" />
-              <span>جاري معالجة الفلتر والخطوط...</span>
-            </div>
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 bg-white/95 px-4 py-1.5 rounded-full shadow-md border border-[#e2e8f0] flex items-center gap-2">
+            <div className="w-24 h-2 bg-[#cbd5e1] rounded-full animate-pulse" />
+            <span className="text-[11px] font-extrabold text-[#0a2540]">تحديث المعاينة...</span>
           </div>
         )}
 
         <div
-          onMouseDown={handleMouseDown}
+          onMouseDown={handlePointerDown}
+          onTouchStart={handlePointerDown}
           onWheel={handleWheel}
           style={{ transform: `scale(${zoom})`, transformOrigin: 'center center' }}
           className={`transition-transform duration-150 relative shadow-2xl rounded-sm bg-white overflow-hidden select-none ${
-            isDragging ? 'cursor-grabbing ring-2 ring-[#0a2540]' : 'cursor-grab'
+            activeTool === 'erase' || activeTool === 'restore' || activeTool === 'wand'
+              ? 'cursor-crosshair ring-2 ring-[#047857]'
+              : isDragging
+              ? 'cursor-grabbing ring-2 ring-[#0a2540]'
+              : 'cursor-grab'
           }`}
         >
-          <canvas ref={canvasRef} className="max-w-[85vw] lg:max-w-[70vw] max-h-[32vh] sm:max-h-[50vh] lg:max-h-[68vh] object-contain block pointer-events-none" />
+          <canvas
+            ref={canvasRef}
+            className="max-w-[85vw] lg:max-w-[70vw] max-h-[32vh] sm:max-h-[50vh] lg:max-h-[68vh] object-contain block pointer-events-none"
+          />
+
+          {cursorPos && (activeTool === 'erase' || activeTool === 'restore') && (
+            <div
+              style={{
+                width: `${brushSize}px`,
+                height: `${brushSize}px`,
+                left: `${cursorPos.x - brushSize / 2}px`,
+                top: `${cursorPos.y - brushSize / 2}px`
+              }}
+              className={`pointer-events-none absolute rounded-full border-2 z-30 ${
+                activeTool === 'erase'
+                  ? 'border-[#dc2626] bg-[#dc2626]/20'
+                  : 'border-[#047857] bg-[#047857]/20'
+              }`}
+            />
+          )}
 
           <div
             className="absolute inset-0 pointer-events-none grid"
@@ -246,121 +377,42 @@ export default function AX_PosterCanvasPreview({ item, settings, onPreparePrint,
           </div>
         </div>
 
-        <div className="mt-4 flex items-center gap-2.5 bg-white/95 backdrop-blur-xs border border-[#cbd5e1] px-4 py-2 rounded-[30px] shadow-sm z-10 flex-wrap justify-center">
+        <div className="mt-3 flex items-center gap-2 bg-white/95 backdrop-blur-xs border border-[#cbd5e1] px-4 py-1.5 rounded-[30px] shadow-xs z-10 flex-wrap justify-center">
           {onScaleChange && (
             <div className="flex items-center gap-1.5 border-l border-[#cbd5e1] pl-3 ml-1">
-              <span className="text-[11px] font-extrabold text-[#0a2540] flex items-center gap-1">
-                <Maximize2 size={13} />
-                <span>تكبير الرسمة:</span>
-              </span>
-
+              <span className="text-[11px] font-extrabold text-[#0a2540]">تكبير:</span>
               <button
                 type="button"
                 onClick={() => onScaleChange(Math.max(0.2, parseFloat(((settings.scale || 1) - 0.1).toFixed(2))))}
-                className="w-7 h-7 flex items-center justify-center bg-[#f1f5f9] hover:bg-[#e2e8f0] text-[#0a2540] font-extrabold rounded-full transition-all text-xs"
-                title="تصغير (-10%)"
+                className="w-6 h-6 flex items-center justify-center bg-[#f1f5f9] hover:bg-[#e2e8f0] text-[#0a2540] font-extrabold rounded-full text-xs"
               >
                 -
               </button>
-
               <button
                 type="button"
                 onClick={() => onScaleChange(1)}
-                className="min-w-[48px] px-2 py-0.5 text-[11px] font-mono font-extrabold text-[#0a2540] bg-[#e0f2fe] border border-[#bae6fd] rounded-[14px] hover:bg-[#bae6fd] transition-all text-center"
-                title="اضغط للرجوع للوضع الطبيعي 100%"
+                className="min-w-[44px] px-2 py-0.5 text-[11px] font-mono font-extrabold text-[#0a2540] bg-[#e0f2fe] rounded-[14px]"
               >
                 {Math.round((settings.scale || 1) * 100)}%
               </button>
-
               <button
                 type="button"
                 onClick={() => onScaleChange(Math.min(4.0, parseFloat(((settings.scale || 1) + 0.1).toFixed(2))))}
-                className="w-7 h-7 flex items-center justify-center bg-[#0a2540] hover:bg-[#123961] text-white font-extrabold rounded-full transition-all text-xs shadow-sm"
-                title="تكبير (+10%)"
+                className="w-6 h-6 flex items-center justify-center bg-[#0a2540] text-white font-extrabold rounded-full text-xs"
               >
                 +
               </button>
-
-              <div className="flex items-center gap-1 mr-1">
-                {[
-                  { val: 1.0, label: '100%' },
-                  { val: 1.3, label: '130%' },
-                  { val: 1.6, label: '160%' },
-                  { val: 2.0, label: '200%' },
-                  { val: 3.0, label: '300%' }
-                ].map((p) => {
-                  const isCur = Math.abs((settings.scale || 1) - p.val) < 0.05;
-                  return (
-                    <button
-                      key={p.val}
-                      type="button"
-                      onClick={() => onScaleChange(p.val)}
-                      className={`px-2 py-0.5 text-[10px] font-extrabold rounded-[12px] border transition-all ${
-                        isCur
-                          ? 'bg-[#0a2540] text-white border-[#0a2540]'
-                          : 'bg-white text-[#475569] border-[#cbd5e1] hover:bg-[#f1f5f9]'
-                      }`}
-                    >
-                      {p.label}
-                    </button>
-                  );
-                })}
-              </div>
-
-              {onFitModeChange && (
-                <button
-                  type="button"
-                  onClick={() => onFitModeChange(settings.fitMode === 'fill' ? 'fit' : 'fill')}
-                  className={`px-2.5 py-0.5 text-[10px] font-extrabold rounded-[14px] border transition-all ${
-                    settings.fitMode === 'fill'
-                      ? 'bg-[#047857] text-white border-[#047857]'
-                      : 'bg-white text-[#047857] border-[#a7f3d0] hover:bg-[#ecfdf5]'
-                  }`}
-                  title="ملء مساحة البوستر بالكامل أو احتواء"
-                >
-                  {settings.fitMode === 'fill' ? 'ملء (Fill) ✓' : 'ملء البوستر'}
-                </button>
-              )}
             </div>
           )}
 
           <span className="text-[11px] font-bold text-[#64748b] flex items-center gap-1">
-            <Move size={13} />
+            <Move size={12} />
             <span>تحريك:</span>
           </span>
-
-          <button
-            type="button"
-            onClick={() => shiftPan(5, 0)}
-            className="p-1 hover:bg-[#f1f5f9] rounded-full text-[#0a2540] font-bold"
-            title="تحريك لليمين"
-          >
-            <ArrowRight size={14} />
-          </button>
-          <button
-            type="button"
-            onClick={() => shiftPan(0, -5)}
-            className="p-1 hover:bg-[#f1f5f9] rounded-full text-[#0a2540] font-bold"
-            title="تحريك للأعلى"
-          >
-            <ArrowUp size={14} />
-          </button>
-          <button
-            type="button"
-            onClick={() => shiftPan(0, 5)}
-            className="p-1 hover:bg-[#f1f5f9] rounded-full text-[#0a2540] font-bold"
-            title="تحريك للأسفل"
-          >
-            <ArrowDown size={14} />
-          </button>
-          <button
-            type="button"
-            onClick={() => shiftPan(-5, 0)}
-            className="p-1 hover:bg-[#f1f5f9] rounded-full text-[#0a2540] font-bold"
-            title="تحريك لليسار"
-          >
-            <ArrowLeft size={14} />
-          </button>
+          <button type="button" onClick={() => shiftPan(5, 0)} className="p-1 hover:bg-[#f1f5f9] rounded-full text-[#0a2540]"><ArrowRight size={13} /></button>
+          <button type="button" onClick={() => shiftPan(0, -5)} className="p-1 hover:bg-[#f1f5f9] rounded-full text-[#0a2540]"><ArrowUp size={13} /></button>
+          <button type="button" onClick={() => shiftPan(0, 5)} className="p-1 hover:bg-[#f1f5f9] rounded-full text-[#0a2540]"><ArrowDown size={13} /></button>
+          <button type="button" onClick={() => shiftPan(-5, 0)} className="p-1 hover:bg-[#f1f5f9] rounded-full text-[#0a2540]"><ArrowLeft size={13} /></button>
 
           {(settings.panX !== 0 || settings.panY !== 0 || (settings.scale && settings.scale !== 1)) && (
             <button
@@ -369,16 +421,12 @@ export default function AX_PosterCanvasPreview({ item, settings, onPreparePrint,
                 resetPan();
                 if (onScaleChange) onScaleChange(1);
               }}
-              className="flex items-center gap-1 text-[10px] font-bold text-[#0369a1] bg-[#e0f2fe] hover:bg-[#bae6fd] px-2 py-0.5 rounded-[12px] transition-colors"
+              className="flex items-center gap-1 text-[10px] font-bold text-[#0369a1] bg-[#e0f2fe] px-2 py-0.5 rounded-[12px]"
             >
               <RotateCcw size={11} />
-              <span>إعادة توسيط وضبط</span>
+              <span>توسيط</span>
             </button>
           )}
-
-          <span className="text-[10px] font-mono text-[#64748b] border-r border-[#cbd5e1] pr-2 mr-1">
-            X: {settings.panX || 0}% | Y: {settings.panY || 0}%
-          </span>
         </div>
       </div>
     </div>
