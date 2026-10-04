@@ -1,5 +1,5 @@
 import React from 'react';
-import { Eraser, Wand2, Sparkles, Undo2, RotateCcw, ImagePlus, Palette, Move, Brush, Check, Trash2 } from 'lucide-react';
+import { Eraser, Wand2, Sparkles, Undo2, RotateCcw, ImagePlus, Palette, Move, Brush, Check, Trash2, Crop } from 'lucide-react';
 
 export default function AX_BackgroundTabPanel({
   settings,
@@ -9,6 +9,7 @@ export default function AX_BackgroundTabPanel({
   brushSize,
   onBrushSizeChange,
   onAutoRemoveBg,
+  onAutoTrim,
   onUndoBgEdit,
   onResetOriginalImage,
   canUndo,
@@ -37,10 +38,49 @@ export default function AX_BackgroundTabPanel({
 
   return (
     <div className="space-y-4">
+      <div className="p-3.5 bg-[#f0f9ff] rounded-xl border border-[#bae6fd] space-y-2.5">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-extrabold text-[#0369a1] flex items-center gap-1.5">
+            <Crop size={14} />
+            <span>1. قص وتكبير اللوجو الصغير (Auto-Trim):</span>
+          </span>
+          <span className="text-[10px] font-bold text-[#0369a1] bg-white px-2 py-0.5 rounded-full border border-[#bae6fd]">
+            قص الفراغات
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          {onAutoTrim && (
+            <button
+              type="button"
+              onClick={onAutoTrim}
+              className="flex items-center justify-center gap-1.5 bg-[#0284c7] hover:bg-[#0369a1] text-white py-2 px-3 rounded-[24px] text-xs font-extrabold shadow-2xs transition-all hover:-translate-y-0.5"
+              title="قص الفراغات المحيطة وتكبير اللوجو فوراً"
+            >
+              <Sparkles size={13} />
+              <span>قص وتكبير تلقائي</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() => onSelectTool(activeTool === 'crop' ? 'move' : 'crop')}
+            className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-[24px] text-xs font-extrabold border transition-all ${
+              activeTool === 'crop'
+                ? 'bg-[#0a2540] text-white border-[#0a2540]'
+                : 'bg-white text-[#0a2540] border-[#cbd5e1] hover:bg-[#f8fafc]'
+            }`}
+          >
+            <Crop size={13} />
+            <span>أداة القص اليدوي</span>
+          </button>
+        </div>
+      </div>
+
       <div className="p-4 bg-[#f8fafc] rounded-xl border border-[#e2e8f0] space-y-3">
         <div className="flex items-center justify-between">
           <span className="text-xs font-extrabold text-[#0a2540]">
-            1. عزل وإزالة الخلفية التلقائي (محلياً):
+            2. عزل وإزالة الخلفية التلقائي (محلياً):
           </span>
           <span className="text-[10px] font-bold text-[#047857] bg-[#ecfdf5] border border-[#a7f3d0] px-2.5 py-0.5 rounded-full">
             يعمل بدون إنترنت

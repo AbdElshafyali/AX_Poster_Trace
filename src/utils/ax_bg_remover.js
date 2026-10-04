@@ -240,3 +240,64 @@ export function applyBrushStroke(
   }
   ctx.restore();
 }
+
+export function findContentBoundingBox(canvas, tolerance = 24) {
+  const width = canvas.width;
+  const height = canvas.height;
+  const ctx = canvas.getContext('2d');
+  const imgData = ctx.getImageData(0, 0, width, height);
+  const d = imgData.data;
+
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 4;
+      const alpha = d[idx + 3];
+      if (alpha > 20) {
+        const r = d[idx];
+        const g = d[idx + 1];
+        const b = d[idx + 2];
+        const isWhite = r >= (255 - tolerance) && g >= (255 - tolerance) && b >= (255 - tolerance);
+        if (!isWhite) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+  }
+
+  if (maxX < minX || maxY < minY) {
+    return null;
+  }
+
+  return { minX, minY, maxX, maxY, width: maxX - minX + 1, height: maxY - minY + 1 };
+}
+
+export function cropCanvas(sourceCanvas, cropX, cropY, cropW, cropH) {
+  const w = Math.max(1, Math.round(cropW));
+  const h = Math.max(1, Math.round(cropH));
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(sourceCanvas, cropX, cropY, cropW, cropH, 0, 0, w, h);
+  return c;
+}
+
+export function autoTrimCanvas(sourceCanvas, padding = 12, tolerance = 24) {
+  const box = findContentBoundingBox(sourceCanvas, tolerance);
+  if (!box) return null;
+
+  const x0 = Math.max(0, box.minX - padding);
+  const y0 = Math.max(0, box.minY - padding);
+  const x1 = Math.min(sourceCanvas.width, box.maxX + 1 + padding);
+  const y1 = Math.min(sourceCanvas.height, box.maxY + 1 + padding);
+
+  return cropCanvas(sourceCanvas, x0, y0, x1 - x0, y1 - y0);
+}

@@ -111,6 +111,8 @@ export const WEB_ASSET_PRESETS = [
   }
 ];
 
+import { findContentBoundingBox } from './ax_bg_remover';
+
 export function renderAssetSizeCanvas(
   sourceCanvas,
   preset,
@@ -120,11 +122,32 @@ export function renderAssetSizeCanvas(
     paddingPercent = 10,
     bgMode = 'transparent',
     bgColor = '#ffffff',
-    watermarkOpacity = 0.08
+    watermarkOpacity = 0.08,
+    faviconPadding = 2,
+    autoTrimFavicons = true
   } = options;
 
-  const sW = sourceCanvas.width;
-  const sH = sourceCanvas.height;
+  let workingSrc = sourceCanvas;
+  if (preset.id.startsWith('favicon_') && autoTrimFavicons) {
+    const box = findContentBoundingBox(sourceCanvas, 24);
+    if (box && (box.width < sourceCanvas.width * 0.95 || box.height < sourceCanvas.height * 0.95)) {
+      const pad = 4;
+      const x0 = Math.max(0, box.minX - pad);
+      const y0 = Math.max(0, box.minY - pad);
+      const x1 = Math.min(sourceCanvas.width, box.maxX + 1 + pad);
+      const y1 = Math.min(sourceCanvas.height, box.maxY + 1 + pad);
+      const trimW = x1 - x0;
+      const trimH = y1 - y0;
+      const tc = document.createElement('canvas');
+      tc.width = trimW;
+      tc.height = trimH;
+      tc.getContext('2d').drawImage(sourceCanvas, x0, y0, trimW, trimH, 0, 0, trimW, trimH);
+      workingSrc = tc;
+    }
+  }
+
+  const sW = workingSrc.width;
+  const sH = workingSrc.height;
 
   const targetW = preset.mode === 'original' ? sW : preset.width;
   const targetH = preset.mode === 'original' ? sH : preset.height;
@@ -147,12 +170,14 @@ export function renderAssetSizeCanvas(
   }
 
   if (preset.mode === 'original') {
-    ctx.drawImage(sourceCanvas, 0, 0);
+    ctx.drawImage(workingSrc, 0, 0);
     return out;
   }
 
   let effectivePad = paddingPercent / 100;
-  if (preset.mode === 'maskable') {
+  if (preset.id.startsWith('favicon_')) {
+    effectivePad = faviconPadding / 100;
+  } else if (preset.mode === 'maskable') {
     effectivePad = Math.max(0.2, effectivePad);
   } else if (preset.mode === 'social') {
     effectivePad = Math.max(0.18, effectivePad);
@@ -160,8 +185,8 @@ export function renderAssetSizeCanvas(
     effectivePad = 0.22;
   }
 
-  const availW = targetW * (1 - effectivePad * 2);
-  const availH = targetH * (1 - effectivePad * 2);
+  const availW = Math.max(1, targetW * (1 - effectivePad * 2));
+  const availH = Math.max(1, targetH * (1 - effectivePad * 2));
 
   const sRatio = sW / sH;
   const aRatio = availW / availH;

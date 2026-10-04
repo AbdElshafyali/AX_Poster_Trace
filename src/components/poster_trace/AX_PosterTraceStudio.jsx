@@ -14,8 +14,11 @@ import {
   cloneCanvas,
   autoRemoveBackground,
   magicWandRemoveAtPoint,
-  applyBrushStroke
+  applyBrushStroke,
+  autoTrimCanvas,
+  cropCanvas
 } from '../../utils/ax_bg_remover';
+import { createSamplePosterItem } from '../../utils/ax_sample_helper';
 
 const DEFAULT_ITEM_SETTINGS = {
   colorMode: 'color',
@@ -70,6 +73,29 @@ export default function AX_PosterTraceStudio() {
     if (!item.undoStack) item.undoStack = [];
     if (item.undoStack.length >= 12) item.undoStack.shift();
     item.undoStack.push(snap);
+  };
+
+  const handleAutoTrim = () => {
+    if (!activeItem || !activeItem.canvas) return;
+    pushUndoSnapshot(activeItem);
+    const trimmed = autoTrimCanvas(activeItem.canvas, 10, 24);
+    if (trimmed) {
+      activeItem.canvas = trimmed;
+      activeItem.width = trimmed.width;
+      activeItem.height = trimmed.height;
+      setCanvasVersion((v) => v + 1);
+    }
+  };
+
+  const handleConfirmCrop = (cropX, cropY, cropW, cropH) => {
+    if (!activeItem || !activeItem.canvas || cropW < 5 || cropH < 5) return;
+    pushUndoSnapshot(activeItem);
+    const cropped = cropCanvas(activeItem.canvas, cropX, cropY, cropW, cropH);
+    activeItem.canvas = cropped;
+    activeItem.width = cropped.width;
+    activeItem.height = cropped.height;
+    setActiveTool('move');
+    setCanvasVersion((v) => v + 1);
   };
 
   const handleAutoRemoveBg = () => {
@@ -252,50 +278,9 @@ export default function AX_PosterTraceStudio() {
   };
 
   const handleSampleClick = () => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 1600;
-    canvas.height = 1200;
-    const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, 1600, 1200);
-
-    ctx.fillStyle = '#fef08a';
-    ctx.beginPath();
-    ctx.arc(800, 520, 260, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#1e293b';
-    ctx.lineWidth = 14;
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.arc(710, 470, 25, 0, Math.PI * 2);
-    ctx.arc(890, 470, 25, 0, Math.PI * 2);
-    ctx.fillStyle = '#0f172a';
-    ctx.fill();
-
-    ctx.lineWidth = 10;
-    ctx.beginPath();
-    ctx.arc(800, 540, 140, 0.2 * Math.PI, 0.8 * Math.PI);
-    ctx.stroke();
-
-    ctx.font = 'bold 56px sans-serif';
-    ctx.fillStyle = '#0a2540';
-    ctx.textAlign = 'center';
-    ctx.fillText('نموذج تجريبي لإزالة الخلفية والشف والتقسيم', 800, 950);
-
-    const sampleId = `sample_${Date.now()}`;
-    setItems([{
-      id: sampleId,
-      name: 'رسمة_نموذجية.png',
-      canvas,
-      originalCanvas: cloneCanvas(canvas),
-      undoStack: [],
-      dataUrl: canvas.toDataURL('image/png'),
-      width: 1600,
-      height: 1200,
-      settings: { ...DEFAULT_ITEM_SETTINGS }
-    }]);
-    setCheckedItemIds(new Set([sampleId]));
+    const sample = createSamplePosterItem(DEFAULT_ITEM_SETTINGS);
+    setItems([sample]);
+    setCheckedItemIds(new Set([sample.id]));
     setActiveIndex(0);
   };
 
@@ -478,7 +463,7 @@ export default function AX_PosterTraceStudio() {
               className={`
                 flex-1 min-w-0 flex flex-col overflow-hidden bg-[#f1f5f9] relative order-1 lg:order-2
                 ${mobileViewMode === 'settings' ? 'hidden lg:flex' : 'flex'}
-                ${mobileViewMode === 'split' ? 'h-[42vh] shrink-0 border-b border-[#e2e8f0] lg:border-b-0 lg:h-full' : 'h-full'}
+                ${mobileViewMode === 'split' ? 'h-[44vh] shrink-0 border-b border-[#e2e8f0] lg:border-b-0 lg:h-full' : 'h-full'}
               `}
             >
               <AX_PosterCanvasPreview
@@ -492,7 +477,10 @@ export default function AX_PosterTraceStudio() {
                 onBrushStrokeMove={handleBrushStrokeMove}
                 onWandClick={handleWandClick}
                 onAutoRemoveBg={handleAutoRemoveBg}
+                onAutoTrim={handleAutoTrim}
+                onConfirmCrop={handleConfirmCrop}
                 onUndoBgEdit={handleUndoBgEdit}
+                onResetOriginalImage={handleResetOriginalImage}
                 canUndo={Boolean(activeItem?.undoStack?.length)}
                 onPreparePrint={() => handlePrepareBatchPrint([activeItem])}
                 onPanChange={(newPanX, newPanY) => {
@@ -532,7 +520,7 @@ export default function AX_PosterTraceStudio() {
                   <div className="hidden lg:flex items-center justify-between px-4 py-2 bg-[#f8fafc] border-b border-[#e2e8f0] text-xs font-extrabold text-[#0a2540]">
                     <span className="flex items-center gap-1.5">
                       <Sliders size={14} />
-                      <span>لوحة التحكم وإزالة الخلفية</span>
+                      <span>لوحة التحكم وقص وإعدادات اللوجو</span>
                     </span>
                     <button
                       type="button"
@@ -555,6 +543,7 @@ export default function AX_PosterTraceStudio() {
                       brushSize={brushSize}
                       onBrushSizeChange={setBrushSize}
                       onAutoRemoveBg={handleAutoRemoveBg}
+                      onAutoTrim={handleAutoTrim}
                       onUndoBgEdit={handleUndoBgEdit}
                       onResetOriginalImage={handleResetOriginalImage}
                       canUndo={Boolean(activeItem?.undoStack?.length)}

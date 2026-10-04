@@ -13,6 +13,7 @@ export default function AX_PosterControlPanel({
   brushSize,
   onBrushSizeChange,
   onAutoRemoveBg,
+  onAutoTrim,
   onUndoBgEdit,
   onResetOriginalImage,
   canUndo,
@@ -104,6 +105,7 @@ export default function AX_PosterControlPanel({
             brushSize={brushSize}
             onBrushSizeChange={onBrushSizeChange}
             onAutoRemoveBg={onAutoRemoveBg}
+            onAutoTrim={onAutoTrim}
             onUndoBgEdit={onUndoBgEdit}
             onResetOriginalImage={onResetOriginalImage}
             canUndo={canUndo}
